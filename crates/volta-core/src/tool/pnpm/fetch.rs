@@ -146,9 +146,20 @@ fn fetch_remote_distro(
     ))
 }
 
+/// Determine the entry script for the tool, which is `.mjs` in newer pnpm versions and `.cjs` in older ones
+fn entry_script(base_path: &Path, tool: &str) -> String {
+    let mjs = format!("{}.mjs", tool);
+    if base_path.join(&mjs).is_file() {
+        mjs
+    } else {
+        format!("{}.cjs", tool)
+    }
+}
+
 /// Create executable launchers for the pnpm and pnpx binaries
 fn write_launcher(base_path: &Path, tool: &str) -> Fallible<()> {
     let path = base_path.join(tool);
+    let script = entry_script(base_path, tool);
     write(
         &path,
         format!(
@@ -161,9 +172,9 @@ case `uname` in
     *CYGWIN*) basedir=`cygpath -w "$basedir"`;;
 esac
 
-node "$basedir/{}.cjs" "$@"
+node "$basedir/{}" "$@"
 "#,
-            tool
+            script
         ),
     )
     .and_then(|_| set_executable(&path))
@@ -175,7 +186,39 @@ node "$basedir/{}.cjs" "$@"
 fn write_cmd_launcher(base_path: &Path, tool: &str) -> Fallible<()> {
     write(
         base_path.join(format!("{}.cmd", tool)),
-        format!("@echo off\nnode \"%~dp0\\{}.cjs\" %*", tool),
+        format!(
+            "@echo off\nnode \"%~dp0\\{}\" %*",
+            entry_script(base_path, tool)
+        ),
     )
     .with_context(|| ErrorKind::WriteLauncherError { tool: tool.into() })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::read_to_string;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_write_launcher_mjs() {
+        let dir = tempdir().unwrap();
+        write(dir.path().join("pnpm.mjs"), "").unwrap();
+
+        write_launcher(dir.path(), "pnpm").unwrap();
+
+        let launcher = read_to_string(dir.path().join("pnpm")).unwrap();
+        assert!(launcher.contains(r#"node "$basedir/pnpm.mjs" "$@""#));
+    }
+
+    #[test]
+    fn test_write_launcher_cjs() {
+        let dir = tempdir().unwrap();
+        write(dir.path().join("pnpm.cjs"), "").unwrap();
+
+        write_launcher(dir.path(), "pnpm").unwrap();
+
+        let launcher = read_to_string(dir.path().join("pnpm")).unwrap();
+        assert!(launcher.contains(r#"node "$basedir/pnpm.cjs" "$@""#));
+    }
 }
